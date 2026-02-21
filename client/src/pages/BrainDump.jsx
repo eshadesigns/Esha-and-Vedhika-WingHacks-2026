@@ -1,39 +1,80 @@
 import { useNavigate } from "react-router-dom"
-import { useState } from "react"
+import { useState, useEffect } from "react"
 
-function clusterOf(text) {
-  const t = text.toLowerCase()
-
-  if (/(resume|linkedin|apply|interview|portfolio)/.test(t)) return "career"
-  if (/(homework|exam|quiz|study|class)/.test(t)) return "school"
-  if (/(hackathon|build|app|startup|business)/.test(t)) return "build"
-
-  return "other"
-}
+const API = import.meta.env.VITE_API_URL || "/api"
 
 function BrainDump() {
   const navigate = useNavigate()
   const [ideas, setIdeas] = useState([])
   const [text, setText] = useState("")
+  const [similarities, setSimilarities] = useState([])
+  const [loading, setLoading] = useState(true)
 
-  function addIdea() {
-    if (!text.trim()) return
-
-    const newIdea = {
-    id: Date.now(),
-    text: text,
-    cluster: clusterOf(text),
-    done: false
+  // Fetch nodes from backend on mount
+  useEffect(() => {
+    async function loadNodes() {
+      try {
+        const res = await fetch(`${API}/nodes`)
+        const nodes = await res.json()
+        if (Array.isArray(nodes)) {
+          setIdeas(nodes.map((n) => ({
+            id: n.id,
+            text: n.text,
+            done: n.status === "done",
+          })))
+        }
+      } catch (e) {
+        console.error("Failed to load nodes:", e)
+      } finally {
+        setLoading(false)
+      }
     }
+    loadNodes()
+  }, [])
 
-    setIdeas(prev => [...prev, newIdea])
-    setText("")
+  // Fetch similarities from backend whenever ideas change
+  useEffect(() => {
+    if (ideas.length < 2) {
+      setSimilarities([])
+      return
+    }
+    async function fetchSimilarities() {
+      try {
+        const res = await fetch(`${API}/similarity`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ideas: ideas.map((i) => i.text) }),
+        })
+        const data = await res.json()
+        setSimilarities(data.similarities || [])
+      } catch (e) {
+        setSimilarities([])
+      }
+    }
+    fetchSimilarities()
+  }, [ideas])
+
+  async function addIdea() {
+    if (!text.trim()) return
+    try {
+      const res = await fetch(`${API}/nodes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: text.trim() }),
+      })
+      const node = await res.json()
+      setIdeas((prev) => [
+        ...prev,
+        { id: node.id, text: node.text, done: node.status === "done" },
+      ])
+      setText("")
+    } catch (e) {
+      console.error("Failed to add node:", e)
+    }
   }
 
   function goToSynthesize() {
-    navigate("/synthesize", {
-      state: { ideas }
-    })
+    navigate("/synthesize", { state: { ideas } })
   }
 
   return (
@@ -55,7 +96,7 @@ function BrainDump() {
     <div style={{ padding: 24, paddingBottom: 0 }}>
       <div style={{ fontSize: 28, fontWeight: 800 }}>IdeaNet</div>
       <div style={{ opacity: 0.75, marginTop: 6 }}>
-        Dump everything on your mind
+        {loading ? "Loading…" : "Dump everything on your mind"}
       </div>
     </div>
 
@@ -68,36 +109,31 @@ function BrainDump() {
         >
         {/* Connection Lines */}
         <svg
-            width="100%"
-            height="100%"
-            style={{
+          width="100%"
+          height="100%"
+          style={{
             position: "absolute",
             top: 0,
             left: 0,
             zIndex: 0
-            }}
+          }}
         >
-            {ideas.map((idea, i) =>
-            ideas.map((other, j) => {
-                if (i >= j) return null
-                //if the two ideas belong to the same cluster, draw a line between them
-                if (idea.cluster === other.cluster) {
-                return (
-                    <line
-                    key={`${idea.id}-${other.id}`}
-                    x1={`${(i * 97) % 80 + 8}%`}
-                    y1={`${(i * 53) % 70 + 10}%`}
-                    x2={`${(j * 97) % 80 + 8}%`}
-                    y2={`${(j * 53) % 70 + 10}%`}
-                    stroke="rgba(148, 147, 147, 0.93)"
-                    strokeWidth="1.5"
-                    />
-                )
-                }
-
-                return null
-            })
-            )}
+          {/* Draw lines for pairs with high similarity */}
+          {similarities.map((sim) => {
+            const { i, j, score } = sim
+            if (score < 0.5 || !ideas[i] || !ideas[j]) return null
+            return (
+                <line
+                  key={`${ideas[i].id}-${ideas[j].id}`}
+                  x1={`${(i * 97) % 80 + 8}%`}
+                  y1={`${(i * 53) % 70 + 10}%`}
+                  x2={`${(j * 97) % 80 + 8}%`}
+                  y2={`${(j * 53) % 70 + 10}%`}
+                  stroke="rgba(148, 147, 147, 0.93)"
+                  strokeWidth="1.5"
+                />
+            )
+          })}
         </svg>
 
         {/* BUBBLES */}

@@ -1,5 +1,7 @@
 import { useNavigate, useLocation } from "react-router-dom"
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
+
+const API = import.meta.env.VITE_API_URL || "/api"
 
 function Synthesize() {
   const navigate = useNavigate()
@@ -8,48 +10,109 @@ function Synthesize() {
   const [ideas, setIdeas] = useState([])
   const [selectedId, setSelectedId] = useState(null)
   const [tasks, setTasks] = useState([])
+  const [tasksLoading, setTasksLoading] = useState(false)
+
+  const fetchTasks = useCallback(async (text) => {
+    setTasksLoading(true)
+    try {
+      const res = await fetch(`${API}/synthesize`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      })
+      const data = await res.json()
+      setTasks(data.steps || [])
+    } catch (e) {
+      setTasks(["Could not fetch steps from backend. Is the server running?"])
+    } finally {
+      setTasksLoading(false)
+    }
+  }, [])
 
   useEffect(() => {
-    if (location.state?.ideas) {
-      setIdeas(location.state.ideas)
-      if (location.state.ideas.length > 0) {
-        setSelectedId(location.state.ideas[0].id)
-        setTasks(makeTasks(location.state.ideas[0].text))
+    async function loadIdeas() {
+      if (location.state?.ideas?.length > 0) {
+        const fromState = location.state.ideas.map((i) => ({
+          id: i.id,
+          text: i.text,
+          done: !!i.done,
+        }))
+        setIdeas(fromState)
+        setSelectedId(fromState[0].id)
+        fetchTasks(fromState[0].text)
+        return
+      }
+      try {
+        const res = await fetch(`${API}/nodes`)
+        const nodes = await res.json()
+        if (Array.isArray(nodes) && nodes.length > 0) {
+          const mapped = nodes.map((n) => ({
+            id: n.id,
+            text: n.text,
+            done: n.status === "done",
+          }))
+          setIdeas(mapped)
+          setSelectedId(mapped[0].id)
+          fetchTasks(mapped[0].text)
+        }
+      } catch (e) {
+        console.error("Failed to load nodes:", e)
       }
     }
-  }, [location.state])
+    loadIdeas()
+  }, [location.state?.ideas, fetchTasks])
 
-  function makeTasks(text) {
-    return [
-      `Write what “done” looks like for: ${text}`,
-      `Break ${text} into 3 sub-steps`,
-      `Do the smallest step in 10 minutes`
-    ]
-  }
-
-  function toggleDone(id) {
-    setIdeas(prev =>
-      prev.map(i =>
-        i.id === id ? { ...i, done: !i.done } : i
+  async function toggleDone(id) {
+    const idea = ideas.find((i) => i.id === id)
+    if (!idea) return
+    const newDone = !idea.done
+    try {
+      await fetch(`${API}/nodes/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: newDone ? "done" : "active" }),
+      })
+      setIdeas((prev) =>
+        prev.map((i) => (i.id === id ? { ...i, done: newDone } : i))
       )
-    )
+    } catch (e) {
+      setIdeas((prev) =>
+        prev.map((i) => (i.id === id ? { ...i, done: newDone } : i))
+      )
+    }
   }
 
   function selectIdea(idea) {
     setSelectedId(idea.id)
-    setTasks(makeTasks(idea.text))
+    fetchTasks(idea.text)
   }
 
   function markTaskDone(i) {
     setTasks(prev => prev.map((t, idx) => idx === i ? t + " ✓" : t))
   }
 
-  function regenTask(i) {
-    setTasks(prev =>
-      prev.map((t, idx) =>
-        idx === i ? "Try a smaller step: 5 minutes only" : t
+  async function regenTask(i) {
+    const currentTask = tasks[i]
+    try {
+      const res = await fetch(`${API}/synthesize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: `Break this into ONE tiny 5-minute step: "${currentTask.replace(/ ✓| \(saved for later\)/g, '')}"`
+        })
+      })
+      const data = await res.json()
+      const newSteps = data.steps || []
+      if (newSteps.length > 0) {
+        setTasks(prev => prev.map((t, idx) => idx === i ? newSteps[0] : t))
+      }
+    } catch (e) {
+      setTasks(prev =>
+        prev.map((t, idx) =>
+          idx === i ? t + " (regenerate failed)" : t
+        )
       )
-    )
+    }
   }
 
   function sendFuture(i) {
@@ -203,6 +266,12 @@ function Synthesize() {
           }}
         >
           <h3 style={{ marginTop: 0 }}>Small Tasks</h3>
+
+          {tasksLoading ? (
+            <p style={{ opacity: 0.7 }}>Generating steps…</p>
+          ) : tasks.length === 0 && ideas.length > 0 ? (
+            <p style={{ opacity: 0.7 }}>Select a goal or check that the backend is running.</p>
+          ) : null}
 
           {tasks.map((task, i) => (
             <div
