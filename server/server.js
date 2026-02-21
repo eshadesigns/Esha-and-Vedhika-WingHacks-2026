@@ -127,7 +127,7 @@ app.post('/api/synthesize', async (req, res) => {
             const prompt = `Goal: ${node.text}.\nAs a productivity assistant, break this goal into 3 tiny, actionable starting steps.\nReturn the response ONLY as a valid JSON array of strings.\nExample: ["Step 1", "Step 2", "Step 3"]`;
             try {
                     const rawText = await generate(modelName, prompt);
-                const cleanedText = text.replace(/```json|```/g, "").trim();
+                const cleanedText = rawText.replace(/```json|```/g, "").trim();
                 const aiSteps = JSON.parse(cleanedText);
                 await supabase.from('nodes').update({ steps: aiSteps }).eq('id', node.id);
                 console.log(`✨ Gemini synthesized steps for: ${node.text}`);

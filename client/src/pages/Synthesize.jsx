@@ -140,7 +140,7 @@ function Synthesize() {
     <div style={{ maxWidth: 1200, margin: "0 auto" }}>
       <h1 style={{ marginBottom: 6 }}>Synthesize</h1>
       <p style={{ opacity: 0.75, marginTop: 0 }}>
-        Organized goals + actionable steps.
+         You’ve got this✨ Here’s your execution plan.
       </p>
 
       <div

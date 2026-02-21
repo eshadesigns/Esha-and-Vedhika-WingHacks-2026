@@ -1,6 +1,7 @@
 import { useNavigate } from "react-router-dom"
 import { useState, useEffect } from "react"
 
+
 const API = import.meta.env.VITE_API_URL || "/api"
 
 function BrainDump() {
@@ -9,6 +10,13 @@ function BrainDump() {
   const [text, setText] = useState("")
   const [similarities, setSimilarities] = useState([])
   const [loading, setLoading] = useState(true)
+  
+  function addIdea() {
+    if (!text.trim()) return;
+    const newIdea = { id: `local-${Date.now()}`, text: text.trim(), done: false };
+    setIdeas((prev) => [...prev, newIdea]);
+    setText("");
+  }
 
   // Fetch nodes from backend on mount
   useEffect(() => {
@@ -38,6 +46,44 @@ function BrainDump() {
       setSimilarities([])
       return
     }
+    function computeLocalSimilarities(arr) {
+      const toks = (s) =>
+        s.toLowerCase().split(/\W+/).filter(Boolean)
+      const sets = arr.map((t) => new Set(toks(t)))
+      const pairs = []
+      for (let i = 0; i < sets.length; i++) {
+        for (let j = i + 1; j < sets.length; j++) {
+          const a = sets[i]
+          const b = sets[j]
+          const inter = Array.from(a).filter((w) => b.has(w)).length
+          const union = new Set([...a, ...b]).size || 1
+          const score = inter / union
+          pairs.push({ i, j, score })
+        }
+      }
+      return pairs.sort((x, y) => y.score - x.score)
+    }
+
+    async function fetchSimilarities() {
+      try {
+        const res = await fetch(`${API}/similarity`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ideas: ideas.map((i) => i.text) }),
+        })
+        const data = await res.json()
+        if (data && Array.isArray(data.similarities) && data.similarities.length) {
+          setSimilarities(data.similarities)
+        } else {
+          setSimilarities(computeLocalSimilarities(ideas.map((i) => i.text)))
+        }
+      } catch (e) {setSimilarities(computeLocalSimilarities(ideas.map((i) => i.text)))
+      }
+    }
+
+    fetchSimilarities()
+  }, [ideas])
+    /*
     async function fetchSimilarities() {
       try {
         const res = await fetch(`${API}/similarity`, {
@@ -56,22 +102,35 @@ function BrainDump() {
 
   async function addIdea() {
     if (!text.trim()) return
-    try {
-      const res = await fetch(`${API}/nodes`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: text.trim() }),
-      })
-      const node = await res.json()
-      setIdeas((prev) => [
-        ...prev,
-        { id: node.id, text: node.text, done: node.status === "done" },
-      ])
-      setText("")
-    } catch (e) {
-      console.error("Failed to add node:", e)
+    // Local-only: create a temporary idea and add to state immediately.
+    const newIdea = {
+      id: `local-${Date.now()}`,
+      text: text.trim(),
+      done: false,
     }
+    setIdeas((prev) => [...prev, newIdea])
+    setText("")
   }
+  */
+
+  // async function addIdea() {
+  //   if (!text.trim()) return
+  //   try {
+  //     const res = await fetch(`${API}/nodes`, {
+  //       method: "POST",
+  //       headers: { "Content-Type": "application/json" },
+  //       body: JSON.stringify({ text: text.trim() }),
+  //     })
+  //     const node = await res.json()
+  //     setIdeas((prev) => [
+  //       ...prev,
+  //       { id: node.id, text: node.text, done: node.status === "done" },
+  //     ])
+  //     setText("")
+  //   } catch (e) {
+  //     console.error("Failed to add node:", e)
+  //   }
+  // }
 
   function goToSynthesize() {
     navigate("/synthesize", { state: { ideas } })
@@ -96,7 +155,7 @@ function BrainDump() {
     <div style={{ padding: 24, paddingBottom: 0 }}>
       <div style={{ fontSize: 28, fontWeight: 800 }}>IdeaNet</div>
       <div style={{ opacity: 0.75, marginTop: 6 }}>
-        {loading ? "Loading…" : "Dump everything on your mind"}
+        {loading ? "Loading…" : "Think. Connect. Act."}
       </div>
     </div>
 
@@ -121,7 +180,7 @@ function BrainDump() {
           {/* Draw lines for pairs with high similarity */}
           {similarities.map((sim) => {
             const { i, j, score } = sim
-            if (score < 0.5 || !ideas[i] || !ideas[j]) return null
+            if (score < 0.3 || !ideas[i] || !ideas[j]) return null
             return (
                 <line
                   key={`${ideas[i].id}-${ideas[j].id}`}
@@ -232,7 +291,7 @@ function BrainDump() {
     background: primary ? "rgba(103,77,255,0.65)" : "rgba(255,255,255,0.10)",
     color: "white",
     cursor: disabled ? "not-allowed" : "pointer",
-    opacity: disabled ? 0.5 : 1,
+    opacity: disabled ? 0 : 1,
     fontWeight: 600,
     whiteSpace: "nowrap",
   };
