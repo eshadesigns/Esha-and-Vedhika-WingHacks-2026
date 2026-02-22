@@ -197,86 +197,88 @@ app.post('/api/contracts/:id/done', async (req, res) => {
 });
 
 /* EVALUATE CONTRACT */
-app.post('/api/contracts/:id/evaluate', async (req, res) => {
-  const contractId = req.params.id;
-  const { failing_user_id } = req.body;
+// EVALUATE CONTRACT (frontend calls /api/evaluate)
+app.post('/api/evaluate', async (req, res) => {
+  const { contractId, username, friendUsername, required, completed, stake } = req.body;
 
-  const { data: contract, error } = await supabase
-    .from('contracts')
-    .select('*')
-    .eq('id', contractId)
-    .single();
+  if (!contractId || !username || !friendUsername) {
+    return res.status(400).json({ error: "Missing fields" });
+  }
 
-  if (error || !contract)
-    return res.status(404).json({ error: "Contract not found" });
+  try {
+    // 1. Get contract
+    const { data: contract } = await supabase
+      .from('contracts')
+      .select('*')
+      .eq('id', contractId)
+      .single();
 
-  if (contract.is_eval)
-    return res.status(400).json({ error: "Already evaluated" });
+    if (!contract) return res.status(404).json({ error: "Contract not found" });
 
-  const {
-    daily_task_goal,
-    daily_stake,
-    user_a_id,
-    user_b_id,
-    user_a_completed_today,
-    user_b_completed_today
-  } = contract;
+    if (contract.is_eval) {
+      return res.status(400).json({ error: "Already evaluated" });
+    }
 
-  const completed =
-    failing_user_id === user_a_id
-      ? user_a_completed_today
-      : user_b_completed_today;
+    // 2. Determine penalty
+    const ratio = required > 0 ? completed / required : 0;
+    const penalty = Math.max(0, Math.min(stake, stake * (1 - ratio)));
 
-  const partner_id =
-    failing_user_id === user_a_id
-      ? user_b_id
-      : user_a_id;
+    // 3. Find profiles
+    const { data: user } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('username', username)
+      .single();
 
-  const ratio = completed / daily_task_goal;
-  const penalty = Math.max(
-    0,
-    Math.min(daily_stake, daily_stake * (1 - ratio))
-  );
+    const { data: friend } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('username', friendUsername)
+      .single();
 
-  const { data: failingUser } = await supabase
-    .from('profiles')
-    .select('*')
-    .eq('id', failing_user_id)
-    .single();
+    if (!user || !friend) {
+      return res.status(404).json({ error: "User not found" });
+    }
 
-  const { data: partnerUser } = await supabase
-    .from('profiles')
-    .select('*')
-    .eq('id', partner_id)
-    .single();
+    // 4. Apply penalty (transfer money)
+    if (user.balance < penalty) {
+      return res.status(400).json({ error: "Insufficient balance" });
+    }
 
-  if (!failingUser || !partnerUser)
-    return res.status(404).json({ error: "User not found" });
+    await supabase
+      .from('profiles')
+      .update({ balance: user.balance - penalty })
+      .eq('id', user.id);
 
-  if (failingUser.balance < penalty)
-    return res.status(400).json({ error: "Insufficient balance" });
+    await supabase
+      .from('profiles')
+      .update({ balance: friend.balance + penalty })
+      .eq('id', friend.id);
 
-  await supabase
-    .from('profiles')
-    .update({ balance: failingUser.balance - penalty })
-    .eq('id', failing_user_id);
+    // 5. Mark contract evaluated and reset day
+    await supabase
+      .from('contracts')
+      .update({
+        is_eval: true,
+        user_a_completed_today: 0,
+        user_b_completed_today: 0,
+        done_count: 0
+      })
+      .eq('id', contractId);
 
-  await supabase
-    .from('profiles')
-    .update({ balance: partnerUser.balance + penalty })
-    .eq('id', partner_id);
+    res.json({
+      message: "Evaluated",
+      penalty,
+      balances: {
+        [username]: user.balance - penalty,
+        [friendUsername]: friend.balance + penalty
+      }
+    });
 
-  await supabase
-    .from('contracts')
-    .update({
-      is_eval: true,
-      user_a_completed_today: 0,
-      user_b_completed_today: 0,
-      done_count: 0
-    })
-    .eq('id', contractId);
-
-  res.json({ penalty });
+  } catch (e) {
+    console.error("EVALUATE ERROR:", e);
+    res.status(500).json({ error: e.message || "Evaluate failed" });
+  }
 });
 
 /* RESET CONTRACT */
