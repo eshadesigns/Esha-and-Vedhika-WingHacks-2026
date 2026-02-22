@@ -185,14 +185,6 @@ function Synthesize() {
     }
   }
 
-  function sendFuture(i) {
-    if (!selectedId) return;
-    setTasksByIdea((prev) => ({
-      ...prev,
-      [selectedId]: (prev[selectedId] || []).map((t, idx) => (idx === i ? { ...t, savedForLater: true } : t)),
-    }));
-  }
-
   async function evaluateContract() {
     if (!contract || !selectedFriend) return;
 
@@ -230,11 +222,20 @@ function Synthesize() {
     }
   }
 
+  function logout() {
+    setContract(null);
+    localStorage.removeItem("contract");
+    navigate("/");
+  }
+
   return (
     <div
+      className="synthesize-page"
       style={{
         minHeight: "100vh",
         width: "100vw",
+        position: "relative",
+        fontFamily: '"Times New Roman", Times, serif',
         background:
           "radial-gradient(900px 500px at 20% 10%, rgba(103,77,255,0.28), transparent 60%)," +
           "radial-gradient(800px 450px at 90% 30%, rgba(0,198,255,0.20), transparent 55%)," +
@@ -244,6 +245,39 @@ function Synthesize() {
         boxSizing: "border-box",
       }}
     >
+      <style>
+        {`
+          .synthesize-page button,
+          .synthesize-page input,
+          .synthesize-page select,
+          .synthesize-page textarea {
+            font-family: inherit;
+          }
+        `}
+      </style>
+
+      <button
+        onClick={logout}
+        title="Log out"
+        style={{
+          position: "absolute",
+          top: 10,
+          right: 14,
+          width: 100,
+          height: 50,
+          borderRadius: 999,
+          border: "1px solid rgba(255,255,255,0.22)",
+          background: "rgba(44, 18, 68, 0.28)",
+          color: "white",
+          fontSize: 18,
+          cursor: "pointer",
+          zIndex: 6,
+          opacity: 0.80,
+        }}
+      >
+        Logout
+      </button>
+
       <div style={{ maxWidth: 1200, margin: "0 auto" }}>
         <h1 style={{ marginBottom: 6 }}>Microtasking</h1>
         <p style={{ opacity: 0.75, marginTop: 0 }}>Here are your actionable items.</p>
@@ -487,9 +521,6 @@ function Synthesize() {
                   </button>
                   <button onClick={() => regenTask(i)} style={taskBtn(true)}>
                     Regenerate
-                  </button>
-                  <button onClick={() => sendFuture(i)} style={taskBtn(true)}>
-                    Send to future
                   </button>
                 </div>
               </div>
