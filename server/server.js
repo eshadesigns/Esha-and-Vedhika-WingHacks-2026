@@ -7,23 +7,32 @@ const { GoogleGenAI } = require("@google/genai");
 const app = express();
 const PORT = 3000;
 
-// Initialize Supabase
+app.use(cors());
+app.use(express.json());
+
+/* =========================================================
+   Supabase Setup
+========================================================= */
+
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_KEY
 );
 
-console.log("🚀 Starting server with Supabase URL:", process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+console.log("🚀 Starting server with Supabase URL:", process.env.SUPABASE_URL);
 
+/* =========================================================
+   Gemini Setup
+========================================================= */
 
 const ai = new GoogleGenAI({
-    apiKey: process.env.GEMINI_API_KEY,
+  apiKey: process.env.GEMINI_API_KEY,
 });
+
 console.log("🚀 Gemini API Key loaded:", !!process.env.GEMINI_API_KEY);
 
-const modelName =  "gemini-2.5-flash";
+const modelName = "gemini-2.5-flash";
 
-// helper: generate content
 async function generate(model, prompt) {
   const response = await ai.models.generateContent({
     model,
@@ -31,114 +40,289 @@ async function generate(model, prompt) {
   });
   return response.text;
 }
-app.use(cors());
-app.use(express.json());
 
-// 1. GET goals from Supabase
+/* =========================================================
+   NODES ENDPOINTS
+========================================================= */
+
+// 1. GET nodes
 app.get('/api/nodes', async (req, res) => {
-    const { data, error } = await supabase.from('nodes').select('*');
-    if (error) return res.status(400).json(error);
-    res.json(data);
+  const { data, error } = await supabase.from('nodes').select('*');
+  if (error) return res.status(400).json(error);
+  res.json(data);
 });
 
-// 2. ADD a new goal to Supabase
+// 2. ADD node
 app.post('/api/nodes', async (req, res) => {
-    const { data, error } = await supabase
-        .from('nodes')
-        .insert([{ text: req.body.text, status: 'active', steps: [] }])
-        .select();
-    
-    if (error) return res.status(400).json(error);
-    res.status(201).json(data[0]);
+  const { data, error } = await supabase
+    .from('nodes')
+    .insert([{ text: req.body.text, status: 'active', steps: [] }])
+    .select();
+
+  if (error) return res.status(400).json(error);
+  res.status(201).json(data[0]);
 });
 
-// 2.2. UPDATE node (e.g. mark done)
+// 3. UPDATE node status
 app.patch('/api/nodes/:id', async (req, res) => {
-    const { status } = req.body;
-    if (!status) return res.status(400).json({ error: 'status required' });
-    const { data, error } = await supabase
-        .from('nodes')
-        .update({ status })
-        .eq('id', req.params.id)
-        .select();
-    if (error) return res.status(400).json(error);
-    res.json(data[0] || {});
+  const { status } = req.body;
+  if (!status) return res.status(400).json({ error: 'status required' });
+
+  const { data, error } = await supabase
+    .from('nodes')
+    .update({ status })
+    .eq('id', req.params.id)
+    .select();
+
+  if (error) return res.status(400).json(error);
+  res.json(data[0] || {});
 });
 
-// 2.5. SIMILARITY: AI-powered node connections (Gemini)
+/* =========================================================
+   SIMILARITY (Gemini)
+========================================================= */
+
 app.post('/api/similarity', async (req, res) => {
-    const { ideas } = req.body;
-    if (!ideas || !Array.isArray(ideas) || ideas.length < 2) {
-        return res.json({ similarities: [] });
-    }
-    const prompt = `You are a productivity assistant. Given these goals/ideas, identify which pairs are meaningfully related (e.g., same domain, can be done together, one enables the other).
+  const { ideas } = req.body;
+
+  if (!ideas || !Array.isArray(ideas) || ideas.length < 2)
+    return res.json({ similarities: [] });
+
+  const prompt = `You are a productivity assistant. Given these goals/ideas, identify which pairs are meaningfully related.
 Goals: ${JSON.stringify(ideas)}
+Return ONLY a valid JSON array of objects.
+Example: [{"i":0,"j":1,"score":0.9}]`;
 
-Return ONLY a valid JSON array of objects. Each object: { "i": number, "j": number, "score": number }
-Example: [{"i":0,"j":1,"score":0.9},{"i":1,"j":2,"score":0.75}]`;
-    try {
-            const rawText = await generate(modelName, prompt);
-            let text = rawText.replace(/```json|```/g, "").trim();
-        const similarities = JSON.parse(text);
-        return res.json({ similarities: Array.isArray(similarities) ? similarities : [] });
-    } catch (e) {
-        console.error("Similarity Error:", e);
-        return res.json({ similarities: [] });
-    }
+  try {
+    const rawText = await generate(modelName, prompt);
+    let text = rawText.replace(/```json|```/g, "").trim();
+    const similarities = JSON.parse(text);
+    res.json({ similarities: Array.isArray(similarities) ? similarities : [] });
+  } catch (e) {
+    console.error("Similarity Error:", e);
+    res.json({ similarities: [] });
+  }
 });
 
-let str = generate(modelName, "What is 2+2? Answer with just the number.");
-console.log
-// 3. THE MAGIC: Synthesize (Real AI Steps from Gemini)
-// Synthesize endpoint: supports both DB and direct text input
+/* =========================================================
+   SYNTHESIZE
+========================================================= */
+
 app.post('/api/synthesize', async (req, res) => {
-    const text = req.body?.text;
-    // If text is provided, synthesize for that text only (frontend use)
-    if (text && typeof text === 'string' && text.trim()) {
-        const prompt = `Goal: ${text.trim()}.\nAs a productivity assistant, break this goal into 3 tiny, actionable starting steps.\nReturn ONLY a valid JSON array of 3 strings, no other text.\nExample: ["Step 1", "Step 2", "Step 3"]`;
-        try {
-                const rawText = await generate(modelName, prompt);
-            let cleanedText = rawText.replace(/```json|```/g, "").trim();
-            let steps;
-            try {
-                steps = JSON.parse(cleanedText);
-            } catch (parseErr) {
-                const match = cleanedText.match(/\[[\s\S]*\]/);
-                if (match) steps = JSON.parse(match[0]);
-                else throw parseErr;
-            }
-            if (!Array.isArray(steps) || steps.length === 0) {
-                steps = steps && Array.isArray(steps) ? steps : ["Break it down and start with the first small action.", "Set a 5-minute timer.", "Celebrate when done."];
-            }
-            return res.json({ steps: steps.slice(0, 3).map(s => String(s)) });
-        } catch (e) {
-            console.error("Synthesize Error:", e?.message || e);
-            return res.status(500).json({ steps: ["Could not synthesize steps."] });
-        }
+  const text = req.body?.text;
+
+  // Frontend direct synthesis
+  if (text && typeof text === 'string' && text.trim()) {
+    const prompt = `Goal: ${text.trim()}.
+Break into 3 tiny actionable steps.
+Return ONLY JSON array.`;
+
+    try {
+      const rawText = await generate(modelName, prompt);
+      let cleaned = rawText.replace(/```json|```/g, "").trim();
+
+      let steps;
+      try {
+        steps = JSON.parse(cleaned);
+      } catch {
+        const match = cleaned.match(/\[[\s\S]*\]/);
+        steps = match ? JSON.parse(match[0]) : [];
+      }
+
+      if (!Array.isArray(steps) || steps.length === 0) {
+        steps = [
+          "Break it down.",
+          "Start the first small action.",
+          "Track completion."
+        ];
+      }
+
+      return res.json({ steps: steps.slice(0, 3) });
+
+    } catch (e) {
+      return res.status(500).json({ steps: ["Could not synthesize steps."] });
     }
-    // Otherwise, do the DB workflow (legacy)
-    const { data: activeNodes, error } = await supabase
-        .from('nodes')
-        .select('*')
-        .eq('status', 'active');
-    if (error) return res.status(400).json(error);
-    for (const node of activeNodes) {
-        if (!node.steps || node.steps.length === 0 || node.steps[0] === "Step 1: Open project") {
-            const prompt = `Goal: ${node.text}.\nAs a productivity assistant, break this goal into 3 tiny, actionable starting steps.\nReturn the response ONLY as a valid JSON array of strings.\nExample: ["Step 1", "Step 2", "Step 3"]`;
-            try {
-                    const rawText = await generate(modelName, prompt);
-                const cleanedText = rawText.replace(/```json|```/g, "").trim();
-                const aiSteps = JSON.parse(cleanedText);
-                await supabase.from('nodes').update({ steps: aiSteps }).eq('id', node.id);
-                console.log(`✨ Gemini synthesized steps for: ${node.text}`);
-            } catch (e) {
-                console.error("Gemini Error:", e);
-            }
-        }
+  }
+
+  // DB workflow
+  const { data: activeNodes, error } = await supabase
+    .from('nodes')
+    .select('*')
+    .eq('status', 'active');
+
+  if (error) return res.status(400).json(error);
+
+  for (const node of activeNodes) {
+    if (!node.steps || node.steps.length === 0) {
+      const prompt = `Goal: ${node.text}.
+Break into 3 tiny actionable steps.
+Return ONLY JSON array.`;
+
+      try {
+        const rawText = await generate(modelName, prompt);
+        const cleaned = rawText.replace(/```json|```/g, "").trim();
+        const aiSteps = JSON.parse(cleaned);
+
+        await supabase
+          .from('nodes')
+          .update({ steps: aiSteps })
+          .eq('id', node.id);
+
+      } catch (e) {
+        console.error("Gemini Error:", e);
+      }
     }
-    res.json({ message: "Gemini Synthesis complete!" });
+  }
+
+  res.json({ message: "Gemini Synthesis complete!" });
 });
+
+
+// =========================================================
+// CONTRACTS
+// =========================================================
+
+// CREATE CONTRACT
+app.post('/api/contracts', async (req, res) => {
+  const { user1_id, user2_id, daily_tsk_count, stake } = req.body;
+
+  const { data, error } = await supabase
+    .from('contracts')
+    .insert([{
+      user1_id,
+      user2_id,
+      daily_tsk_count,
+      stake,
+      done_count: 0,
+      is_eval: false
+    }])
+    .select();
+
+  if (error) return res.status(400).json(error);
+
+  res.status(201).json(data[0]);
+});
+
+
+// GET CONTRACT BY ID
+app.get('/api/contracts/:id', async (req, res) => {
+  const { data, error } = await supabase
+    .from('contracts')
+    .select('*')
+    .eq('id', req.params.id)
+    .single();
+
+  if (error || !data)
+    return res.status(404).json({ error: "Contract not found" });
+
+  res.json(data);
+});
+
+
+// DONE BUTTON (increment done_count)
+app.post('/api/contracts/:id/done', async (req, res) => {
+  const contractId = req.params.id;
+
+  const { data: contract } = await supabase
+    .from('contracts')
+    .select('*')
+    .eq('id', contractId)
+    .single();
+
+  if (!contract)
+    return res.status(404).json({ error: "Contract not found" });
+
+  if (contract.is_eval)
+    return res.status(400).json({ error: "Already evaluated today" });
+
+  const newCount = contract.done_count + 1;
+
+  await supabase
+    .from('contracts')
+    .update({ done_count: newCount })
+    .eq('id', contractId);
+
+  res.json({ done_count: newCount });
+});
+
+
+// EVALUATE CONTRACT
+app.post('/api/contracts/:id/evaluate', async (req, res) => {
+  const contractId = req.params.id;
+  const { failing_user_id } = req.body;
+
+  const { data: contract } = await supabase
+    .from('contracts')
+    .select('*')
+    .eq('id', contractId)
+    .single();
+
+  if (!contract)
+    return res.status(404).json({ error: "Contract not found" });
+
+  if (contract.is_eval)
+    return res.status(400).json({ error: "Already evaluated" });
+
+  const { daily_tsk_count, stake, done_count, user1_id, user2_id } = contract;
+
+  const partner_id =
+    failing_user_id === user1_id ? user2_id : user1_id;
+
+  const ratio = done_count / daily_tsk_count;
+  const penalty = Math.max(0, Math.min(stake, stake * (1 - ratio)));
+
+  const { data: failingUser } = await supabase
+    .from('profiles')
+    .select('*')
+    .eq('id', failing_user_id)
+    .single();
+
+  const { data: partnerUser } = await supabase
+    .from('profiles')
+    .select('*')
+    .eq('id', partner_id)
+    .single();
+
+  if (!failingUser || !partnerUser)
+    return res.status(404).json({ error: "User not found" });
+
+  if (failingUser.balance < penalty)
+    return res.status(400).json({ error: "Insufficient balance" });
+
+  await supabase
+    .from('profiles')
+    .update({ balance: failingUser.balance - penalty })
+    .eq('id', failing_user_id);
+
+  await supabase
+    .from('profiles')
+    .update({ balance: partnerUser.balance + penalty })
+    .eq('id', partner_id);
+
+  await supabase
+    .from('contracts')
+    .update({ is_eval: true, done_count: 0 })
+    .eq('id', contractId);
+
+  res.json({ penalty });
+});
+
+// RESET CONTRACT (MVP)
+app.post('/api/contracts/:id/reset', async (req, res) => {
+  const contractId = req.params.id;
+
+  await supabase
+    .from('contracts')
+    .update({ is_eval: false, done_count: 0 })
+    .eq('id', contractId);
+
+  res.json({ message: "Contract reset" });
+});
+
+/* =========================================================
+   Start Server
+========================================================= */
 
 app.listen(PORT, () => {
-    console.log(`🚀 Server running with Supabase on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });
