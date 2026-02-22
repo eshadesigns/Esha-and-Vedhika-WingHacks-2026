@@ -74,7 +74,45 @@ app.patch('/api/nodes/:id', async (req, res) => {
   if (error) return res.status(400).json(error);
   res.json(data || {});
 });
+// SYNTHESIZE
+app.post('/api/synthesize', async (req, res) => {
+  const text = req.body?.text;
 
+  if (!text || typeof text !== "string" || !text.trim()) {
+    return res.status(400).json({ steps: ["No text provided."] });
+  }
+
+  const prompt = `Goal: ${text.trim()}.
+Break into 3 tiny actionable steps.
+Return ONLY JSON array.`;
+
+  try {
+    const rawText = await generate(modelName, prompt);
+    let cleaned = rawText.replace(/```json|```/g, "").trim();
+
+    let steps;
+    try {
+      steps = JSON.parse(cleaned);
+    } catch {
+      const match = cleaned.match(/\[[\s\S]*\]/);
+      steps = match ? JSON.parse(match[0]) : [];
+    }
+
+    if (!Array.isArray(steps) || steps.length === 0) {
+      steps = [
+        "Break it down.",
+        "Start the first small action.",
+        "Track completion."
+      ];
+    }
+
+    res.json({ steps: steps.slice(0, 3) });
+
+  } catch (e) {
+    console.error("SYNTHESIZE ERROR:", e);
+    res.status(500).json({ steps: ["Could not synthesize steps."] });
+  }
+});
 /* =========================================================
    CONTRACTS
 ========================================================= */
